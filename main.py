@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 from telethon import TelegramClient
 import asyncio
 import os
-from threading import Thread
 
 app = Flask(__name__)
 
@@ -14,23 +13,13 @@ phone = "+923368554422"
 # Initialize client once
 client = TelegramClient('session_name', api_id, api_hash)
 
-# Global event loop for async operations
-loop = None
-
-def start_async_loop():
-    """Start asyncio loop in a separate thread"""
-    global loop
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
-
-async def initialize_client():
-    """Initialize and authenticate the Telegram client"""
-    await client.start(phone=phone)
-    print("Telegram client authenticated successfully!")
-
 async def send_telegram_message(group, message):
     """Send message to Telegram group"""
+    if not client.is_connected():
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.start(phone=phone)
+    
     await client.send_message(group, message)
     return True
 
@@ -40,39 +29,19 @@ def send_message():
     try:
         data = request.get_json()
         
-        # Validate required fields
-        if not data:
-            return jsonify({
-                'status': 'error',
-                'message': 'Request body is required'
-            }), 400
+        # Get group and message from request, or use defaults
+        group = data.get('group', 'https://t.me/+obmFfJdYLWIwYjk0')
+        message = data.get('message', 'This is an automated message.')
         
-        group = data.get('group')
-        message = data.get('message')
-        
-        if not group:
-            return jsonify({
-                'status': 'error',
-                'message': 'group field is required'
-            }), 400
-        
-        if not message:
-            return jsonify({
-                'status': 'error',
-                'message': 'message field is required'
-            }), 400
-        
-        # Run async function in the same loop
-        future = asyncio.run_coroutine_threadsafe(
-            send_telegram_message(group, message), 
-            loop
-        )
-        future.result()  # Wait for completion
+        # Run async function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(send_telegram_message(group, message))
+        loop.close()
         
         return jsonify({
             'status': 'success',
-            'message': 'Message sent successfully!',
-            'sent_to': group
+            'message': 'Message sent successfully!'
         }), 200
         
     except Exception as e:
@@ -86,18 +55,16 @@ def health():
     """Health check endpoint"""
     return jsonify({'status': 'healthy'}), 200
 
+async def initialize_client():
+    """Initialize and authenticate the Telegram client"""
+    await client.start(phone=phone)
+    print("Telegram client authenticated successfully!")
+
 if __name__ == '__main__':
-    # Start async loop in background thread
-    thread = Thread(target=start_async_loop, daemon=True)
-    thread.start()
-    
-    # Wait a moment for loop to start
-    import time
-    time.sleep(0.5)
-    
-    # Initialize client
-    future = asyncio.run_coroutine_threadsafe(initialize_client(), loop)
-    future.result()
+    # Start the client once when app starts
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(initialize_client())
     
     # Get port from environment variable (Railway provides this)
     port = int(os.environ.get('PORT', 5000))
