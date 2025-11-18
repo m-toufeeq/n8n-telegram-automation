@@ -98,22 +98,19 @@ def health():
     """Health check endpoint"""
     return jsonify({'status': 'healthy'}), 200
 
+# Start async loop in background thread immediately when module loads
+thread = Thread(target=start_async_loop, daemon=True)
+thread.start()
+
+# Wait for loop to start
+import time
+time.sleep(0.5)
+
+# Initialize client
+future = asyncio.run_coroutine_threadsafe(initialize_client(), loop)
+future.result()
+
 if __name__ == '__main__':
-    # Start async loop in background thread
-    thread = Thread(target=start_async_loop, daemon=True)
-    thread.start()
-    
-    # Wait a moment for loop to start
-    import time
-    time.sleep(0.5)
-    
-    # Initialize client
-    future = asyncio.run_coroutine_threadsafe(initialize_client(), loop)
-    result = future.result()
-    
-    if not result:
-        print("WARNING: Starting without valid session. Messages will fail.")
-    
     # Get port from environment variable (Railway provides this)
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
