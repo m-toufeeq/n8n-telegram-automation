@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from telethon import TelegramClient
+from telethon import TelegramClient, functions
 import asyncio
 import os
 from threading import Thread
@@ -46,6 +46,54 @@ async def send_telegram_message(group, message):
     await client.send_message(group, message)
     return True
 
+async def join_telegram_group(invite_link):
+    """Join a Telegram group using invite link"""
+    if not client.is_connected():
+        await client.connect()
+    
+    try:
+        # Extract the hash from the invite link
+        # Handles formats like:
+        # https://t.me/+inviteHash
+        # https://t.me/joinchat/inviteHash
+        # t.me/+inviteHash
+        
+        if '+' in invite_link:
+            invite_hash = invite_link.split('+')[-1]
+        elif 'joinchat/' in invite_link:
+            invite_hash = invite_link.split('joinchat/')[-1]
+        else:
+            raise ValueError("Invalid invite link format")
+        
+        # Join the group
+        updates = await client(functions.messages.ImportChatInviteRequest(invite_hash))
+        
+        # Get the group info
+        if hasattr(updates, 'chats') and len(updates.chats) > 0:
+            chat = updates.chats[0]
+            return {
+                'success': True,
+                'group_title': chat.title,
+                'group_id': chat.id
+            }
+        
+        return {'success': True, 'message': 'Joined successfully'}
+        
+    except Exception as e:
+        error_message = str(e)
+        
+        # Handle common errors
+        if 'INVITE_HASH_EXPIRED' in error_message:
+            raise Exception("Invite link has expired")
+        elif 'USER_ALREADY_PARTICIPANT' in error_message:
+            return {'success': True, 'message': 'Already a member of this group'}
+        elif 'CHANNELS_TOO_MUCH' in error_message:
+            raise Exception("You have joined too many channels/groups. Leave some first.")
+        elif 'INVITE_HASH_INVALID' in error_message:
+            raise Exception("Invalid invite link")
+        else:
+            raise Exception(f"Failed to join group: {error_message}")
+
 @app.route('/', methods=['GET'])
 def home():
     """Root endpoint"""
@@ -53,9 +101,50 @@ def home():
         'status': 'running',
         'endpoints': {
             '/health': 'GET - Health check',
-            '/send-message': 'POST - Send telegram message'
+            '/send-message': 'POST - Send telegram message',
+            '/join-group': 'POST - Join a telegram group'
         }
     }), 200
+
+@app.route('/join-group', methods=['POST'])
+def join_group():
+    """Endpoint to join Telegram groups - called by n8n"""
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        if not data:
+            return jsonify({
+                'status': 'error',
+                'message': 'Request body is required'
+            }), 400
+        
+        invite_link = data.get('invite_link')
+        
+        if not invite_link:
+            return jsonify({
+                'status': 'error',
+                'message': 'invite_link field is required'
+            }), 400
+        
+        # Run async function in the same loop
+        future = asyncio.run_coroutine_threadsafe(
+            join_telegram_group(invite_link), 
+            loop
+        )
+        result = future.result()
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Joined group successfully!',
+            'data': result
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 @app.route('/send-message', methods=['GET', 'POST'])
 def send_message():
