@@ -1,36 +1,104 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+from flask import Flask, request, jsonify
 from telethon import TelegramClient
-import uvicorn
+import asyncio
 import os
+from threading import Thread
 
+app = Flask(__name__)
+
+# Your credentials
 api_id = 39955957
 api_hash = "03ecd7b069da3c4da117f1d21ac14f54"
-SESSION_NAME = "my_user_session"
+phone = "+923368554422"
 
-app = FastAPI()
+# Initialize client once
+client = TelegramClient('session_name', api_id, api_hash)
 
-class MessagePayload(BaseModel):
-    group: str
-    message: str
+# Global event loop for async operations
+loop = None
 
-@app.get("/")
-async def root():
-    return {"status": "online", "message": "Telegram automation API is running"}
+def start_async_loop():
+    """Start asyncio loop in a separate thread"""
+    global loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
 
-@app.post("/send")
-async def send_message(payload: MessagePayload):
-    client = TelegramClient(SESSION_NAME, api_id, api_hash)
-    await client.start()
+async def initialize_client():
+    """Initialize and authenticate the Telegram client"""
+    await client.start(phone=phone)
+    print("Telegram client authenticated successfully!")
+
+async def send_telegram_message(group, message):
+    """Send message to Telegram group"""
+    await client.send_message(group, message)
+    return True
+
+@app.route('/send-message', methods=['POST'])
+def send_message():
+    """Endpoint to send Telegram messages"""
     try:
-        await client.send_message(payload.group, payload.message)
-        return {"status": "success", "sent_to": payload.group}
+        data = request.get_json()
+        
+        # Validate required fields
+        if not data:
+            return jsonify({
+                'status': 'error',
+                'message': 'Request body is required'
+            }), 400
+        
+        group = data.get('group')
+        message = data.get('message')
+        
+        if not group:
+            return jsonify({
+                'status': 'error',
+                'message': 'group field is required'
+            }), 400
+        
+        if not message:
+            return jsonify({
+                'status': 'error',
+                'message': 'message field is required'
+            }), 400
+        
+        # Run async function in the same loop
+        future = asyncio.run_coroutine_threadsafe(
+            send_telegram_message(group, message), 
+            loop
+        )
+        future.result()  # Wait for completion
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Message sent successfully!',
+            'sent_to': group
+        }), 200
+        
     except Exception as e:
-        return {"status": "error", "details": str(e)}
-    finally:
-        await client.disconnect()
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
-if __name__ == "__main__":
-    # Railway provides PORT environment variable
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({'status': 'healthy'}), 200
+
+if __name__ == '__main__':
+    # Start async loop in background thread
+    thread = Thread(target=start_async_loop, daemon=True)
+    thread.start()
+    
+    # Wait a moment for loop to start
+    import time
+    time.sleep(0.5)
+    
+    # Initialize client
+    future = asyncio.run_coroutine_threadsafe(initialize_client(), loop)
+    future.result()
+    
+    # Get port from environment variable (Railway provides this)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
