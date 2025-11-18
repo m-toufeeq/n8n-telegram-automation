@@ -14,15 +14,9 @@ class MessagePayload(BaseModel):
     group: str
     message: str
 
-# Add a root endpoint to verify the service is running
 @app.get("/")
 async def root():
     return {"status": "online", "message": "Telegram automation API is running"}
-
-# Add a health check
-@app.get("/health")
-async def health():
-    return {"status": "healthy"}
 
 @app.post("/send")
 async def send_message(payload: MessagePayload):
@@ -37,6 +31,6 @@ async def send_message(payload: MessagePayload):
         await client.disconnect()
 
 if __name__ == "__main__":
-    # Use Railway's PORT environment variable
+    # Railway provides PORT environment variable
     port = int(os.getenv("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
