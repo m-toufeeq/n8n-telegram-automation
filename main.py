@@ -46,9 +46,33 @@ async def send_telegram_message(group, message):
     await client.send_message(group, message)
     return True
 
-@app.route('/send-message', methods=['POST'])
+@app.route('/', methods=['GET'])
+def home():
+    """Root endpoint"""
+    return jsonify({
+        'status': 'running',
+        'endpoints': {
+            '/health': 'GET - Health check',
+            '/send-message': 'POST - Send telegram message'
+        }
+    }), 200
+
+@app.route('/send-message', methods=['GET', 'POST'])
 def send_message():
     """Endpoint to send Telegram messages - called by n8n"""
+    
+    # Handle GET for debugging
+    if request.method == 'GET':
+        return jsonify({
+            'status': 'info',
+            'message': 'This endpoint accepts POST requests with JSON body',
+            'required_fields': ['group', 'message'],
+            'example': {
+                'group': 'https://t.me/+yourGroupLink',
+                'message': 'Your message here'
+            }
+        }), 200
+    
     try:
         data = request.get_json()
         
