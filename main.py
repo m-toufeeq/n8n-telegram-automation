@@ -3,7 +3,9 @@ from telethon import TelegramClient, functions
 import asyncio
 import os
 from threading import Thread
-from datetime import datetime, timedelta, timezone
+# New imports for time filtering
+from datetime import datetime, timedelta, timezone 
+
 app = Flask(__name__)
 
 # Your credentials
@@ -38,6 +40,8 @@ async def initialize_client():
         print(f"Error connecting client: {e}")
         return False
 
+# --- ASYNC TELEGRAM FUNCTIONS ---
+
 async def send_telegram_message(group, message):
     """Send message to Telegram group"""
     if not client.is_connected():
@@ -46,18 +50,63 @@ async def send_telegram_message(group, message):
     await client.send_message(group, message)
     return True
 
+async def reply_to_telegram_message(group_entity, message_id, reply_text):
+    """Reply to a specific message ID in a group."""
+    if not client.is_connected():
+        await client.connect()
+
+    # Get the message object by ID
+    message = await client.get_messages(group_entity, ids=message_id)
+
+    if message:
+        await message.reply(reply_text)
+        return True
+    return False
+
+async def fetch_new_messages_for_ai(group, lookback_seconds=60):
+    """
+    Fetch new, non-outgoing messages from a group to be processed by an AI.
+    Returns a list of structured message data.
+    """
+    if not client.is_connected():
+        await client.connect()
+
+    # Get the group entity
+    entity = await client.get_entity(group)
+
+    # Calculate the time threshold (UTC) - Default to 60 seconds lookback
+    time_threshold = datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds)
+
+    messages_to_process = []
+    
+    # Fetch messages (limit to 50 for safety and performance)
+    async for message in client.iter_messages(entity, limit=50):
+        # Stop if message is older than threshold
+        if message.date < time_threshold:
+            break
+        
+        # Only process text messages that are NOT sent by us.
+        if message.text and not message.out and not message.action:
+            messages_to_process.append({
+                'message_id': message.id,
+                'sender_id': message.sender_id,
+                'group_id': entity.id,
+                'group_username': entity.username if hasattr(entity, 'username') else str(entity.id),
+                'text': message.text, # This is the content you pass to your AI agent
+                'date_utc': message.date.isoformat()
+            })
+
+    # Return messages in oldest-to-newest order for conversational flow
+    return list(reversed(messages_to_process))
+
+
 async def join_telegram_group(invite_link):
-    """Join a Telegram group using invite link"""
+    """Join a Telegram group using invite link (Kept for compatibility)"""
     if not client.is_connected():
         await client.connect()
     
     try:
-        # Extract the hash from the invite link
-        # Handles formats like:
-        # https://t.me/+inviteHash
-        # https://t.me/joinchat/inviteHash
-        # t.me/+inviteHash
-        
+        # Logic for joining group... (omitted for brevity, keep the original code)
         if '+' in invite_link:
             invite_hash = invite_link.split('+')[-1]
         elif 'joinchat/' in invite_link:
@@ -65,10 +114,8 @@ async def join_telegram_group(invite_link):
         else:
             raise ValueError("Invalid invite link format")
         
-        # Join the group
         updates = await client(functions.messages.ImportChatInviteRequest(invite_hash))
         
-        # Get the group info
         if hasattr(updates, 'chats') and len(updates.chats) > 0:
             chat = updates.chats[0]
             return {
@@ -82,7 +129,6 @@ async def join_telegram_group(invite_link):
     except Exception as e:
         error_message = str(e)
         
-        # Handle common errors
         if 'INVITE_HASH_EXPIRED' in error_message:
             raise Exception("Invite link has expired")
         elif 'USER_ALREADY_PARTICIPANT' in error_message:
@@ -94,44 +140,38 @@ async def join_telegram_group(invite_link):
         else:
             raise Exception(f"Failed to join group: {error_message}")
 
+# --- FLASK ROUTES ---
+
 @app.route('/', methods=['GET'])
 def home():
-    """Root endpoint"""
+    """Root endpoint (Updated to show new routes)"""
     return jsonify({
         'status': 'running',
         'endpoints': {
             '/health': 'GET - Health check',
             '/send-message': 'POST - Send telegram message',
-            '/join-group': 'POST - Join a telegram group'
+            '/join-group': 'POST - Join a telegram group',
+            '/fetch-messages': 'POST - Get new messages for AI processing',
+            '/reply-to': 'POST - Send AI-generated reply to a specific message ID',
         }
     }), 200
 
+# Endpoint to join Telegram groups (Kept for compatibility)
 @app.route('/join-group', methods=['POST'])
 def join_group():
     """Endpoint to join Telegram groups - called by n8n"""
     try:
         data = request.get_json()
         
-        # Validate required fields
         if not data:
-            return jsonify({
-                'status': 'error',
-                'message': 'Request body is required'
-            }), 400
+            return jsonify({'status': 'error', 'message': 'Request body is required'}), 400
         
         invite_link = data.get('invite_link')
         
         if not invite_link:
-            return jsonify({
-                'status': 'error',
-                'message': 'invite_link field is required'
-            }), 400
+            return jsonify({'status': 'error', 'message': 'invite_link field is required'}), 400
         
-        # Run async function in the same loop
-        future = asyncio.run_coroutine_threadsafe(
-            join_telegram_group(invite_link), 
-            loop
-        )
+        future = asyncio.run_coroutine_threadsafe(join_telegram_group(invite_link), loop)
         result = future.result()
         
         return jsonify({
@@ -141,16 +181,13 @@ def join_group():
         }), 200
         
     except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 500
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
+# Endpoint to send Telegram messages (Kept for compatibility)
 @app.route('/send-message', methods=['GET', 'POST'])
 def send_message():
     """Endpoint to send Telegram messages - called by n8n"""
     
-    # Handle GET for debugging
     if request.method == 'GET':
         return jsonify({
             'status': 'info',
@@ -165,33 +202,19 @@ def send_message():
     try:
         data = request.get_json()
         
-        # Validate required fields
         if not data:
-            return jsonify({
-                'status': 'error',
-                'message': 'Request body is required'
-            }), 400
+            return jsonify({'status': 'error', 'message': 'Request body is required'}), 400
         
         group = data.get('group')
         message = data.get('message')
         
         if not group:
-            return jsonify({
-                'status': 'error',
-                'message': 'group field is required'
-            }), 400
+            return jsonify({'status': 'error', 'message': 'group field is required'}), 400
         
         if not message:
-            return jsonify({
-                'status': 'error',
-                'message': 'message field is required'
-            }), 400
+            return jsonify({'status': 'error', 'message': 'message field is required'}), 400
         
-        # Run async function in the same loop
-        future = asyncio.run_coroutine_threadsafe(
-            send_telegram_message(group, message), 
-            loop
-        )
+        future = asyncio.run_coroutine_threadsafe(send_telegram_message(group, message), loop)
         future.result()
         
         return jsonify({
@@ -201,75 +224,81 @@ def send_message():
         }), 200
         
     except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 500
-@app.route('/auto-reply', methods=['POST'])
-def auto_reply():
-    """
-    Endpoint to check for new messages and reply to them.
-    Call this from n8n on a schedule.
-    """
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# --- NEW ENDPOINTS FOR AI AUTOMATION ---
+
+@app.route('/fetch-messages', methods=['POST'])
+def fetch_messages():
+    """Endpoint to fetch new messages for AI processing - Step 1 of the new workflow."""
     try:
         data = request.get_json()
         
-        # Validate inputs
         if not data or 'group' not in data:
-            return jsonify({'status': 'error', 'message': 'group field is required'}), 400
-            
-        group = data.get('group')
-        reply_text = data.get('message', "Auto-reply: I received your message.") # Default message
-        lookback_seconds = data.get('lookback', 10) # Only check messages from last 10 seconds
-        
-        async def process_messages():
-            if not client.is_connected():
-                await client.connect()
-            
-            # Get the group entity
-            entity = await client.get_entity(group)
-            
-            # Calculate the time threshold (UTC)
-            time_threshold = datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds)
-            
-            replied_count = 0
-            
-            # Fetch messages (limit to 20 to be safe)
-            async for message in client.iter_messages(entity, limit=20):
-                # Stop if message is older than threshold
-                if message.date < time_threshold:
-                    break
-                
-                # Check if message is NOT mine (incoming) and is NOT a service message (like "user joined")
-                if not message.out and not message.action:
-                    try:
-                        # Reply to the message
-                        await message.reply(reply_text)
-                        replied_count += 1
-                        print(f"Replied to message {message.id} from user {message.sender_id}")
-                    except Exception as e:
-                        print(f"Failed to reply to {message.id}: {e}")
-                        
-            return replied_count
+            return jsonify({'status': 'error', 'message': 'group field is required in the body.'}), 400
 
-        # Run the async function
+        group = data.get('group')
+        # lookback determines how far back in time to check for messages (in seconds)
+        lookback = data.get('lookback', 60) 
+        
+        # Run async function to fetch messages
         future = asyncio.run_coroutine_threadsafe(
-            process_messages(), 
+            fetch_new_messages_for_ai(group, lookback), 
             loop
         )
-        count = future.result()
+        messages = future.result()
         
         return jsonify({
             'status': 'success',
-            'message': f'Processed replies successfully. Replied to {count} messages.',
-            'replied_count': count
+            'message': f'Fetched {len(messages)} new messages for AI processing.',
+            'messages': messages
         }), 200
-
+        
     except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 500
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/reply-to', methods=['POST'])
+def reply_to():
+    """Endpoint to send AI-generated reply - Step 2 of the new workflow."""
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ['group', 'message_id', 'reply_text']
+        if not data or not all(field in data for field in required_fields):
+            return jsonify({
+                'status': 'error',
+                'message': f'Request body requires all fields: {", ".join(required_fields)}'
+            }), 400
+        
+        group = data.get('group')
+        message_id = data.get('message_id')
+        reply_text = data.get('reply_text')
+        
+        # Run async function to reply to the specific message ID
+        future = asyncio.run_coroutine_threadsafe(
+            reply_to_telegram_message(group, message_id, reply_text), 
+            loop
+        )
+        success = future.result()
+        
+        if success:
+            return jsonify({
+                'status': 'success',
+                'message': f'Successfully replied to message ID {message_id} in group {group}'
+            }), 200
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': f'Failed to find or reply to message ID {message_id} in group {group}'
+            }), 500
+        
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
@@ -291,4 +320,3 @@ if __name__ == '__main__':
     # Get port from environment variable (Railway provides this)
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-
