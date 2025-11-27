@@ -3,7 +3,7 @@ from telethon import TelegramClient, functions
 import asyncio
 import os
 from threading import Thread
-
+from datetime import datetime, timedelta, timezone
 app = Flask(__name__)
 
 # Your credentials
@@ -205,7 +205,71 @@ def send_message():
             'status': 'error',
             'message': str(e)
         }), 500
+@app.route('/auto-reply', methods=['POST'])
+def auto_reply():
+    """
+    Endpoint to check for new messages and reply to them.
+    Call this from n8n on a schedule.
+    """
+    try:
+        data = request.get_json()
+        
+        # Validate inputs
+        if not data or 'group' not in data:
+            return jsonify({'status': 'error', 'message': 'group field is required'}), 400
+            
+        group = data.get('group')
+        reply_text = data.get('message', "Auto-reply: I received your message.") # Default message
+        lookback_seconds = data.get('lookback', 10) # Only check messages from last 10 seconds
+        
+        async def process_messages():
+            if not client.is_connected():
+                await client.connect()
+            
+            # Get the group entity
+            entity = await client.get_entity(group)
+            
+            # Calculate the time threshold (UTC)
+            time_threshold = datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds)
+            
+            replied_count = 0
+            
+            # Fetch messages (limit to 20 to be safe)
+            async for message in client.iter_messages(entity, limit=20):
+                # Stop if message is older than threshold
+                if message.date < time_threshold:
+                    break
+                
+                # Check if message is NOT mine (incoming) and is NOT a service message (like "user joined")
+                if not message.out and not message.action:
+                    try:
+                        # Reply to the message
+                        await message.reply(reply_text)
+                        replied_count += 1
+                        print(f"Replied to message {message.id} from user {message.sender_id}")
+                    except Exception as e:
+                        print(f"Failed to reply to {message.id}: {e}")
+                        
+            return replied_count
 
+        # Run the async function
+        future = asyncio.run_coroutine_threadsafe(
+            process_messages(), 
+            loop
+        )
+        count = future.result()
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Processed replies successfully. Replied to {count} messages.',
+            'replied_count': count
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
@@ -227,3 +291,4 @@ if __name__ == '__main__':
     # Get port from environment variable (Railway provides this)
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+
