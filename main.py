@@ -112,7 +112,8 @@ def home():
         'status': 'running',
         'endpoints': {
             '/fetch-messages': 'POST - Get new messages',
-            '/reply-to': 'POST - Reply to a message'
+            '/reply-to': 'POST - Reply to a message',
+            '/send-message': 'POST - Send a new message' # Added this
         }
     }), 200
 
@@ -158,6 +159,26 @@ def reply_to():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
+@app.route('/send-message', methods=['POST'])
+def send_message():
+    try:
+        data = request.get_json()
+        group = data.get('group')
+        message = data.get('message')
+        
+        if not group or not message:
+            return jsonify({'status': 'error', 'message': 'Both "group" and "message" fields are required'}), 400
+        
+        future = asyncio.run_coroutine_threadsafe(
+            send_telegram_message(group, message), 
+            loop
+        )
+        success = future.result()
+        
+        return jsonify({'status': 'success' if success else 'error'}), 200 if success else 500
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'healthy'}), 200
@@ -175,3 +196,4 @@ future.result()
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+
